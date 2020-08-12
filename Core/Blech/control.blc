@@ -1,0 +1,203 @@
+const MSEC_PER_SYSTICK: nat16 = 10
+
+const DEBOUNCE: nat8 = 5
+
+struct LedStates
+    var green: bool
+    var red: bool
+    var orange: bool
+    var blue: bool
+end
+
+struct ButtonStates
+	var top: bool
+	var center: bool
+	var bottom: bool
+end
+
+// Turns on all LEDs.
+// @param[out] leds The states of the LEDs.
+function ledsAllOn () (leds: LedStates)
+    leds.orange = true
+    leds.green = true
+    leds.red = true
+    leds.blue = true
+end
+
+// Turns off all LEDs.
+// @param[out] leds The states of the LEDs.
+function ledsAllOff () (leds: LedStates)
+    leds.orange = false
+    leds.green = false
+    leds.red = false
+    leds.blue = false
+end
+
+activity AwaitMsec (msec: nat16)
+	var i: nat16 = msec / MSEC_PER_SYSTICK
+	repeat
+		await true
+		i = i - 1
+	until i == 0 end
+end
+
+// @param[in] lvl true = high, false = low
+activity AwaitStableLevel (lvl: bool, btnRaw: bool)
+	var vote: nat8 = 0
+	repeat
+		await true
+		if btnRaw == lvl then
+			vote = vote + 1 // positive logic
+		elseif vote > 0 then
+			vote = vote - 1 // negative logic
+		end
+	until vote >= DEBOUNCE end
+end
+
+activity AwaitOtherButton (btn1: bool, btn2: bool, msec: nat16) returns bool
+	var success: bool = false
+	when not btn1 abort
+		cobegin weak
+			await btn2
+			success = true
+		with weak
+			run AwaitMsec(msec)
+		end
+	end
+	return success
+end
+
+activity FilterSignal (btnRaw: bool)(btn: bool)
+    repeat
+        btn = false
+        //
+        // Await transition: LOW -> HIGH
+		//
+		run AwaitStableLevel(true, btnRaw)
+        
+        btn = true
+        //
+        // Await transition: HIGH -> LOW
+        //
+        run AwaitStableLevel(false, btnRaw)
+    end
+end
+
+activity FilterButtons (btnsRaw: ButtonStates)(btns: ButtonStates)
+	cobegin
+		run FilterSignal(btnsRaw.top)(btns.top)
+	with
+		run FilterSignal(btnsRaw.center)(btns.center)
+	with
+		run FilterSignal(btnsRaw.bottom)(btns.bottom)
+	end
+end
+
+activity VisualizeButton (btn: bool) (led: bool)
+	repeat
+		await btn
+		led = true
+		await not btn
+		led = false
+	end
+end
+
+activity Visualize (btns: ButtonStates) (ledTop: bool, ledCenter: bool, ledBottom: bool)
+	cobegin
+		run VisualizeButton(btns.top)(ledTop)
+	with
+		run VisualizeButton(btns.center)(ledCenter)
+	with
+		run VisualizeButton(btns.bottom)(ledBottom)
+	end
+end
+
+// on: The CENTER has to be pressed for at least 2 seconds.
+// off: The CENTER has to be released.
+activity Example01 (btns: ButtonStates) (led: bool)
+	when not btns.center reset
+		await btns.center
+		run AwaitMsec(2000)
+	end
+	led = true
+	await not btns.center
+	led = false
+end
+
+// on: TOP and BOTTOM have to be pressed.
+// off: TOP and BOTTOM have to be released.
+activity Example02 (btns: ButtonStates) (led: bool)
+	await btns.top and btns.bottom
+	led = true
+	await (not btns.top) and (not btns.bottom)
+	led = false
+end
+
+// on: Double press of TOP and BOTTOM (accepted delay = 1 second).
+// off: TOP and BOTTOM have to be released.
+activity Example03 (btns: ButtonStates) (led: bool)
+	let acceptedDelay: nat16 = 1000 // in milliseconds.
+	var success: bool
+	repeat
+		success = false
+		// Await idle state: Both buttons not pressed.
+		await (not btns.top) and (not btns.bottom)
+		// Await at least one button to be pressed.
+		await btns.top or btns.bottom
+
+		if btns.top and btns.bottom then
+			// If both buttons are pressed -> Double press already detected. 
+			success = true
+		elseif btns.top and not btns.bottom then
+			// If TOP is pressed but BOTTOM not yet -> Await BOTTOM within delay.
+			success = run AwaitOtherButton(btns.top, btns.bottom, acceptedDelay)
+		elseif not btns.top and btns.bottom then
+			// If BOTTOM is pressed but TOP not yet -> Await TOP within delay.
+			success = run AwaitOtherButton(btns.bottom, btns.top, acceptedDelay)
+		end
+	until success end
+
+	led = true
+	await (not btns.top) and (not btns.bottom)
+	led = false
+end
+
+activity Example04 (btns: ButtonStates) (led: bool)
+	var i: nat32 = 0
+	repeat
+		await btns.center
+		//
+		// Measure the duration as long as the button keeps being pressed.
+		//
+		when not btns.center abort
+			repeat
+				run AwaitMsec(10)
+				i = i + 1
+			end
+		end
+	until i >= 1000 and i <= 2000 end
+
+	led = true
+
+	await btns.top
+
+	led = false
+end
+
+@[EntryPoint]
+activity Main (btnsRaw: ButtonStates) (leds: LedStates)
+	ledsAllOff()(leds)
+
+	var btns: ButtonStates
+	cobegin
+		run FilterButtons(btnsRaw)(btns)	// FilterButtonss all button states.
+	with
+		run Visualize(btns)(leds.orange, leds.green, leds.blue) 	// Visualizes all button states.
+	with
+		repeat
+			//run Example01(btns)(leds.red)
+			//run Example02(btns)(leds.red)
+			run Example03(btns)(leds.red)
+		end
+	end
+end
